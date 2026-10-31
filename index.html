@@ -1,0 +1,1105 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="DadBot2000"><meta name="theme-color" content="#000000"><title>DadBot2000</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&display=swap">
+<style>
+/* Sparkle edition: costume colors (glitter purple, yellow, orange, silver). One canvas in a 780x360 logical space; glow, scanlines and vignette are cheap composited layers */
+:root {
+  --bg: #000;
+  --purple: #b860ff;
+  --purple-deep: #6d1fc4;
+  --yellow: #ffea3c;
+  --silver: #dfe4f0;
+  --font-crt: "VT323", "Courier New", monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--yellow); }
+body {
+  box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
+  touch-action: manipulation;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#wrap { position: relative; width: 100%; height: 100%; transition: opacity 0.4s; }
+#crt, #glow, #fx { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+#crt { pointer-events: auto; }
+#glow { mix-blend-mode: screen; opacity: 0.9; }
+#fx {
+  background:
+    radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.5) 100%),
+    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0.3) 2px, rgba(0, 0, 0, 0.3) 3px);
+}
+#start {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+  transform: translateX(-50%);
+  font-family: var(--font-crt); font-size: 24px; letter-spacing: 0.12em;
+  color: var(--yellow); background: var(--purple-deep); border: 2px solid var(--silver); padding: 8px 26px; cursor: pointer; z-index: 5;
+  box-shadow: 0 0 18px rgba(184, 96, 255, 0.75);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+#start:focus-visible { outline: 2px solid var(--yellow); outline-offset: 4px; }
+@keyframes pulse { 50% { box-shadow: 0 0 4px rgba(184, 96, 255, 0.3); } }
+#safe { position: fixed; visibility: hidden; pointer-events: none; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { #start { animation: none; } }
+</style></head><body>
+
+<div id="wrap">
+  <canvas id="crt" aria-hidden="true"></canvas>
+  <canvas id="glow" aria-hidden="true"></canvas>
+  <div id="fx" aria-hidden="true"></div>
+</div>
+<div id="safe" aria-hidden="true"></div>
+<p class="sr">DadBot2000 sparkle edition, an animated retro robot chest display with a robot face, fun dial, radar, oscilloscope, dad jokes, a candy counter and a costume scanner.</p>
+<button id="start" type="button">START DADBOT</button>
+
+<script>
+(function () {
+  "use strict";
+  var W = 780, H = 360, TAU = Math.PI * 2, FPS = 30;
+  var FONT = '"VT323", "Courier New", monospace';
+  var T = 0, last = performance.now();
+  var wrapEl = document.getElementById("wrap");
+  var cv = document.getElementById("crt"), ctx = cv.getContext("2d");
+  var gl = document.getElementById("glow"), gctx = gl.getContext("2d");
+  var mid = document.createElement("canvas"), mctx = mid.getContext("2d");
+  var dpr = 1, cw = 1, ch = 1, sc = 1, ox = 0, oy = 0, safeEl = document.getElementById("safe");
+  try { if (document.fonts) document.fonts.load('24px "VT323"').catch(function () {}); } catch (e) {}
+
+  function resize() {
+    var r = cv.getBoundingClientRect();
+    dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    cw = Math.max(1, Math.round(r.width * dpr));
+    ch = Math.max(1, Math.round(r.height * dpr));
+    cv.width = cw; cv.height = ch;
+    // Fill the whole screen. The landscape safe area (59pt each side) is mostly empty margin, so only keep a
+    // small gap on the Dynamic Island side: the bezel tucks under the island and the panels clear it.
+    var cs = getComputedStyle(safeEl), inset = Math.max(parseFloat(cs.paddingLeft) || 0, parseFloat(cs.paddingRight) || 0);
+    var gap = inset > 0 ? Math.min(32, inset * 0.55) * dpr : 0;
+    var ang = screen.orientation && typeof screen.orientation.angle === "number" ? screen.orientation.angle : window.orientation;
+    var side = gap === 0 ? 0 : ang === 90 ? -1 : (ang === 270 || ang === -90) ? 1 : 0; // -1 island on left, 1 on right, 0 unknown
+    var room = cw - (side ? gap : gap * 2);
+    sc = Math.min(room / W, ch / H);
+    ox = (side < 0 ? gap : side > 0 ? 0 : gap) + (room - W * sc) / 2; oy = (ch - H * sc) / 2;
+    mid.width = Math.max(1, Math.round(cw / 3)); mid.height = Math.max(1, Math.round(ch / 3));
+    gl.width = Math.max(1, Math.round(cw / 6)); gl.height = Math.max(1, Math.round(ch / 6));
+  }
+  resize();
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", function () { setTimeout(resize, 300); });
+  if (screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener("change", resize);
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(cv);
+
+  /* ---------- saved settings (candy count, eco mode) ---------- */
+  var candy = 0, eco = false;
+  try { candy = parseInt(localStorage.getItem("dadbot.candy"), 10) || 0; eco = localStorage.getItem("dadbot.eco") === "1"; } catch (e) {}
+  function save(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  /* ---------- palette and drawing helpers ---------- */
+  // costume colors; alerts pull every color toward hot orange
+  var PURPLE = [186, 96, 255], YELLOW = [255, 234, 60], ORANGE = [255, 132, 28], SILVER = [222, 228, 242], ALERTC = [255, 92, 20];
+  var ink0 = YELLOW, alertMix = 0;
+  function C(a, k, c) {
+    if (k == null) k = 1;
+    c = c || ink0;
+    var m = alertMix * 0.85;
+    return "rgba(" + Math.round((c[0] + (ALERTC[0] - c[0]) * m) * k) + "," + Math.round((c[1] + (ALERTC[1] - c[1]) * m) * k) + "," +
+      Math.round((c[2] + (ALERTC[2] - c[2]) * m) * k) + "," + a + ")";
+  }
+  function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+  function font(sz) { ctx.font = sz + "px " + FONT; }
+  function txt(s, x, y, sz, a, align, k, c) {
+    font(sz); ctx.textAlign = align || "left"; ctx.fillStyle = C(a == null ? 1 : a, k, c); ctx.fillText(s, x, y);
+  }
+  function lab(s, x, y, align) { txt(s, x, y, 16, 0.9, align, 0.85, SILVER); }
+  function line(x1, y1, x2, y2, a, k, lw, c) {
+    ctx.strokeStyle = C(a, k, c); ctx.lineWidth = lw || 1;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+  function circ(x, y, r, a, k, lw, c) {
+    ctx.strokeStyle = C(a, k, c); ctx.lineWidth = lw || 1;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+  }
+  function rr(x, y, w, h, r) {
+    ctx.beginPath(); ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function brackets(x, y, w, h, l, a, lw, c) {
+    ctx.strokeStyle = C(a == null ? 1 : a, 1, c); ctx.lineWidth = lw || 2; ctx.beginPath();
+    ctx.moveTo(x, y + l); ctx.lineTo(x, y); ctx.lineTo(x + l, y);
+    ctx.moveTo(x + w - l, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + l);
+    ctx.moveTo(x + w, y + h - l); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - l, y + h);
+    ctx.moveTo(x + l, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - l);
+    ctx.stroke();
+  }
+  function grid(x0, y0, x1, y1, nx, ny) {
+    var i, x, y;
+    ctx.lineWidth = 1; ctx.setLineDash([1, 3]);
+    ctx.strokeStyle = C(0.4, 0.85, PURPLE); ctx.beginPath();
+    for (i = 0; i <= nx; i++) if (i * 2 !== nx) { x = Math.round(x0 + (x1 - x0) * i / nx) + 0.5; ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for (i = 0; i <= ny; i++) if (i * 2 !== ny) { y = Math.round(y0 + (y1 - y0) * i / ny) + 0.5; ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    ctx.stroke();
+    ctx.strokeStyle = C(0.7, 0.9, PURPLE); ctx.beginPath();
+    x = Math.round((x0 + x1) / 2) + 0.5; y = Math.round((y0 + y1) / 2) + 0.5;
+    ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.moveTo(x0, y); ctx.lineTo(x1, y);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  // 4-point sparkle, like a glint off foil
+  function twinkle(x, y, r, a, c) {
+    if (r < 0.4) return;
+    var q = r * 0.22;
+    ctx.fillStyle = C(a, 1, c); ctx.beginPath();
+    ctx.moveTo(x, y - r); ctx.lineTo(x + q, y - q); ctx.lineTo(x + r, y); ctx.lineTo(x + q, y + q);
+    ctx.lineTo(x, y + r); ctx.lineTo(x - q, y + q); ctx.lineTo(x - r, y); ctx.lineTo(x - q, y - q);
+    ctx.closePath(); ctx.fill();
+  }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function pad2(n) { return ("0" + n).slice(-2); }
+  function pad3(n) { return ("00" + n).slice(-3); }
+  function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
+  function bitmap(rows, cx, cy, ps, alphaFn, c) {
+    var x0 = cx - rows[0].length * ps / 2, y0 = cy - rows.length * ps / 2;
+    for (var r = 0; r < rows.length; r++) for (var cc = 0; cc < rows[r].length; cc++) {
+      if (rows[r][cc] === "#") { ctx.fillStyle = C(alphaFn ? alphaFn() : 1, 1, c); ctx.fillRect(x0 + cc * ps, y0 + r * ps, ps - 1, ps - 1); }
+    }
+  }
+  function spr(rows, x, y, ps, a, flip, c) {
+    ctx.fillStyle = C(a == null ? 1 : a, 1, c);
+    var n = rows[0].length, s = ps * 0.88;
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r];
+      for (var cc = 0; cc < n; cc++) if (row[cc] === "#") ctx.fillRect(x + (flip ? n - 1 - cc : cc) * ps, y + r * ps, s, s);
+    }
+  }
+  function wrap(s, maxW, sz) {
+    font(sz);
+    var words = s.split(" "), out = [], cur = "";
+    for (var i = 0; i < words.length; i++) {
+      var test = cur ? cur + " " + words[i] : words[i];
+      if (cur && ctx.measureText(test).width > maxW) { out.push(cur); cur = words[i]; } else cur = test;
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+  function typeLines(lines, n, x, y, sz, a, c) {
+    var rem = n;
+    for (var i = 0; i < lines.length && rem > 0; i++) { txt(lines[i].slice(0, rem), x, y + i * 22, sz, a, "left", 1, c); rem -= lines[i].length + 1; }
+  }
+
+  var SPR = {
+    heart: [".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."],
+    star: ["..#..", "#####", ".###.", ".#.#.", "#...#"],
+    batA: ["##.......##", "###.#.#.###", ".#########.", "...#####...", "....#.#...."],
+    batB: ["....#.#....", "...#####...", ".#########.", "###.....###", "##.......##"],
+    spider: ["#.#...#.#", ".#.###.#.", "..#####..", ".#.###.#.", "#.#...#.#"],
+    spider2: [".#.....#.", "#.#.#.#.#", "..#####..", "#.#.#.#.#", ".#.....#."],
+    catA: ["........#.#.", "#.......###.", ".#......####", ".##########.", "..#########.", "..#.#...#.#."],
+    catB: ["........#.#.", ".#......###.", "#.......####", ".##########.", "..#########.", "...#.#...#.#"],
+    jack: ["....#....", "...##....", ".#######.", "##.###.##", "#########", "##.#.#.##", ".#######."],
+    smile: ["#.........#", ".#.......#.", "..#######.."],
+    grin: ["#############", ".###########.", "..#########..", "....#####...."],
+    b_ghost: [".###.", "#####", "#.#.#", "#####", "#.#.#"],
+    b_candy: ["#.###.#", "#######", "#.###.#"],
+    b_cat: ["#...#", "#####", "#.#.#", "#####", ".###."],
+    b_kid: [".#.", "###", ".#.", "#.#"],
+    b_bat: ["#..#..#", "#######", ".#...#."]
+  };
+  var ICONS = [
+    { n: "CANDY", c: YELLOW, px: ["#...#####...#", "##.#######.##", "#############", "##.#######.##", "#...#####...#"] },
+    { n: "PUMPKIN", c: ORANGE, px: [".....#.....", "....##.....", "..#######..", ".#########.", "##.#####.##", "#...###...#", "###########", "##.#.#.#.##", ".#.......#.", "..#######.."] },
+    { n: "GHOST", c: SILVER, px: ["...#####...", ".#########.", "###########", "##..###..##", "##..###..##", "###########", "####...####", "####...####", "###########", "###########", "#.##.#.##.#"] }
+  ];
+
+  /* ---------- simulated "talking" signal (no microphone) ---------- */
+  var N = 128, wave = new Float32Array(N), spec = new Float32Array(32), level = 0;
+  function simAudio(t) {
+    var i, sum = 0, tgt, v;
+    var e = Math.max(0, Math.sin(t * 1.7) * Math.sin(t * 0.53 + 1.2));
+    var env = 0.08 + 0.92 * Math.pow(e, 0.6);
+    for (i = 0; i < N; i++) {
+      tgt = 0.75 * env * Math.sin(i * 0.42 + t * 14) * (0.6 + 0.4 * Math.sin(i * 1.1 - t * 5));
+      wave[i] += (tgt - wave[i]) * 0.7; sum += Math.abs(tgt) * 0.5;
+    }
+    for (i = 0; i < 32; i++) {
+      var b = Math.exp(-Math.pow((i - 7) / 6, 2)) * 0.95 + Math.exp(-Math.pow((i - 17) / 5, 2)) * 0.5;
+      v = env * b * (0.65 + 0.35 * Math.sin(t * 9 + i * 1.7)) + Math.random() * 0.04;
+      spec[i] += (v - spec[i]) * 0.5;
+    }
+    level += (sum / N - level) * 0.35;
+  }
+
+  /* ---------- particles (boops, candy rain) ---------- */
+  var parts = [];
+  function spawn(p) { if (parts.length < 70) parts.push(p); }
+  function updateParts(dt) {
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var p = parts[i];
+      p.life -= dt;
+      if (p.life <= 0 || p.y > H + 40) { parts.splice(i, 1); continue; }
+      p.x += (p.vx || 0) * dt + (p.sway ? Math.sin(T * 3 + p.ph) * p.sway * dt : 0);
+      p.y += p.vy * dt;
+    }
+  }
+  function drawParts() {
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i], a = Math.min(1, p.life / 0.5);
+      if (p.txt) txt(p.txt, p.x, p.y, p.sz, a, "center", 1, p.c);
+      else spr(p.rows, p.x, p.y, p.ps, a, false, p.c);
+    }
+  }
+  var STARC = [YELLOW, SILVER, PURPLE];
+  function candyRain(stars) {
+    for (var i = 0; i < 26; i++) {
+      var ic = pick(ICONS);
+      spawn({ x: 20 + Math.random() * 720, y: -30 - Math.random() * 220, vy: 70 + Math.random() * 60, sway: 30, ph: Math.random() * 6,
+        life: 6.5, rows: stars ? SPR.star : ic.px, ps: stars ? 3 : 2, c: stars ? STARC[i % 3] : ic.c });
+    }
+  }
+
+  /* ---------- sparkle: glitter on the bezel and glints on panel corners ---------- */
+  var GLIT = [], GLC = [SILVER, SILVER, YELLOW, PURPLE];
+  for (var gi = 0; gi < 56; gi++) {
+    var u = Math.random() * 2232, gx, gy;
+    if (u < 768) { gx = 6 + u; gy = 6; }
+    else if (u < 1116) { gx = 774; gy = 6 + u - 768; }
+    else if (u < 1884) { gx = 774 - (u - 1116); gy = 354; }
+    else { gx = 6; gy = 354 - (u - 1884); }
+    GLIT.push({ x: gx, y: gy, ph: Math.random() * TAU, sp: 0.6 + Math.random() * 1.6, c: GLC[gi & 3] });
+  }
+  function drawGlitter(t) {
+    for (var i = 0; i < GLIT.length; i++) {
+      var g = GLIT[i], s = Math.sin(t * g.sp + g.ph);
+      if (s > 0.82) twinkle(g.x, g.y, (s - 0.82) / 0.18 * 5, 0.95, g.c);
+    }
+  }
+  var glints = [], glintAcc = 1, GPTS = [[16, 45], [764, 45], [16, 306], [764, 338], [544, 270], [554, 298]];
+  function updateGlints(dt) {
+    glintAcc -= dt;
+    if (glintAcc <= 0) { glintAcc = 0.5 + Math.random() * 1.1; var p = pick(GPTS); glints.push({ x: p[0], y: p[1], t: 0 }); }
+    for (var i = glints.length - 1; i >= 0; i--) { glints[i].t += dt; if (glints[i].t > 0.7) glints.splice(i, 1); }
+  }
+  function drawGlints() {
+    for (var i = 0; i < glints.length; i++) {
+      var g = glints[i], r = 11 * Math.sin(Math.PI * g.t / 0.7);
+      line(g.x - r * 0.45, g.y - r * 0.45, g.x + r * 0.45, g.y + r * 0.45, 0.6, 1, 1, SILVER);
+      line(g.x - r * 0.45, g.y + r * 0.45, g.x + r * 0.45, g.y - r * 0.45, 0.6, 1, 1, SILVER);
+      twinkle(g.x, g.y, r, 0.95, SILVER);
+      twinkle(g.x, g.y, r * 0.4, 1, YELLOW);
+    }
+  }
+
+  /* ---------- DadBot face ---------- */
+  var face = { expr: "open", until: 0, blink: 0, nextBlink: 2.5, lx: 0, ly: 0, tx: 0, ty: 0, nextLook: 1, nextMood: 9, boops: 0 };
+  var MOODS = { open: "CHEERY", happy: "JOLLY", wink: "SNEAKY", heart: "SMITTEN", squint: "BOOPED", wide: "SPOOKED" };
+  function setExpr(e, d) { face.expr = e; face.until = T + d; }
+  function updateFace(dt) {
+    face.nextBlink -= dt;
+    if (face.nextBlink <= 0) { face.blink = 0.2; face.nextBlink = Math.random() < 0.2 ? 0.35 : 2 + Math.random() * 4; }
+    face.blink = Math.max(0, face.blink - dt);
+    face.nextLook -= dt;
+    if (face.nextLook <= 0) { face.tx = Math.random() * 2 - 1; face.ty = Math.random() * 1.2 - 0.6; face.nextLook = 0.7 + Math.random() * 2.5; }
+    var k = Math.min(1, dt * 12);
+    face.lx += (face.tx - face.lx) * k; face.ly += (face.ty - face.ly) * k;
+    if (face.expr !== "open" && T > face.until) face.expr = "open";
+    face.nextMood -= dt;
+    if (face.nextMood <= 0) {
+      if (face.expr === "open") setExpr(pick(["happy", "happy", "wink", "heart"]), 1.6);
+      face.nextMood = 7 + Math.random() * 8;
+    }
+  }
+  function eye(cx, cy, kind, side, o) {
+    ctx.strokeStyle = C(1); ctx.lineWidth = 7; ctx.lineCap = "square";
+    if (kind === "happy") {
+      ctx.beginPath(); ctx.moveTo(cx - 16, cy + 8); ctx.lineTo(cx, cy - 9); ctx.lineTo(cx + 16, cy + 8); ctx.stroke(); ctx.lineCap = "butt"; return;
+    }
+    if (kind === "squint") {
+      var d = side < 0 ? 1 : -1;
+      ctx.beginPath(); ctx.moveTo(cx - 13 * d, cy - 14); ctx.lineTo(cx + 12 * d, cy); ctx.lineTo(cx - 13 * d, cy + 14); ctx.stroke(); ctx.lineCap = "butt"; return;
+    }
+    ctx.lineCap = "butt";
+    if (kind === "heart") { var ps = 6 * (1 + 0.12 * Math.sin(T * 10)); spr(SPR.heart, cx - 3.5 * ps, cy - 3 * ps, ps, 1, false, ORANGE); return; }
+    if (kind === "wink" && side > 0) { ctx.fillStyle = C(1); ctx.fillRect(cx - 19, cy - 2, 38, 6); return; }
+    var big = kind === "wide", ew = big ? 46 : 38, eh = (big ? 52 : 44) * o;
+    ctx.fillStyle = C(1); ctx.fillRect(cx - ew / 2, cy - eh / 2, ew, eh);
+    ctx.fillStyle = "#000";
+    var cn = Math.min(5, eh / 4);
+    ctx.fillRect(cx - ew / 2, cy - eh / 2, cn, cn); ctx.fillRect(cx + ew / 2 - cn, cy - eh / 2, cn, cn);
+    ctx.fillRect(cx - ew / 2, cy + eh / 2 - cn, cn, cn); ctx.fillRect(cx + ew / 2 - cn, cy + eh / 2 - cn, cn, cn);
+    if (o > 0.45) {
+      var pw = big ? 9 : 14, ph = big ? 9 : 16, px = big ? 0 : face.lx * 9, py = big ? 0 : face.ly * 9;
+      ctx.fillStyle = "#000"; ctx.fillRect(cx + px - pw / 2, cy + py - ph / 2, pw, ph);
+      ctx.fillStyle = C(1, 1, SILVER); ctx.fillRect(cx + px - pw / 2 + 2, cy + py - ph / 2 + 2, 3, 3);
+    }
+    if (big) { ctx.fillStyle = C(1, 1, PURPLE); ctx.fillRect(cx - 20, cy - 42, 40, 5); }
+  }
+  var FACE = { name: "DADBOT", dur: 18, draw: function (w, h) {
+    var cx = w / 2, ey = 92, ex = face.expr, k;
+    var o = face.blink > 0 ? Math.max(0.08, Math.abs(face.blink - 0.1) / 0.1) : 1;
+    eye(cx - 46, ey, ex, -1, o); eye(cx + 46, ey, ex, 1, o);
+    if (ex === "heart" || ex === "squint") {
+      for (k = 0; k < 3; k++) { line(cx - 68 + k * 7, 130, cx - 63 + k * 7, 122, 0.85, 1, 2, ORANGE); line(cx + 54 + k * 7, 130, cx + 59 + k * 7, 122, 0.85, 1, 2, ORANGE); }
+    }
+    var my = 162;
+    if (level > 0.05) {
+      for (k = 0; k < 9; k++) {
+        var v = clamp(spec[2 + k * 2] * 1.5 + level, 0, 1) * (1 - Math.abs(k - 4) / 10), hh = 4 + v * 34;
+        ctx.fillStyle = C(0.6 + 0.4 * v, 1, mix(YELLOW, ORANGE, 1 - Math.abs(k - 4) / 4)); ctx.fillRect(cx - 49 + k * 11, my - hh / 2, 8, hh);
+      }
+    } else if (ex === "wide") { ctx.strokeStyle = C(1); ctx.lineWidth = 5; ctx.strokeRect(cx - 10, my - 12, 20, 24); }
+    else if (ex === "open") spr(SPR.smile, cx - 33, my - 9, 6, 1);
+    else spr(SPR.grin, cx - 39, my - 12, 6, 1);
+    lab("BOOPS " + pad2(Math.min(99, face.boops)), 8, 205, "left");
+    lab(MOODS[ex] || "CHEERY", w - 8, 205, "right");
+  } };
+  function boop(x, y) {
+    setExpr("squint", 1.2); face.boops++;
+    spawn({ txt: "BOOP!", x: x, y: y - 6, vy: -45, life: 1, sz: 24, c: YELLOW });
+    for (var i = 0; i < 3; i++) spawn({ x: x - 24 + Math.random() * 40, y: y - 10, vy: -50 - Math.random() * 40, sway: 20, ph: Math.random() * 6, life: 1.3, rows: SPR.heart, ps: 2, c: ORANGE });
+  }
+
+  /* ---------- modules: left slot ---------- */
+  // FUN DIAL mirrors the dial and three sticks on the costume panel
+  var dial = { v: 0.3, tgt: 0.3, vel: 0, next: 1 };
+  var DSET = ["MILD", "SPOOKY", "SILLY", "MAX DAD", "TURBO", "SPARKLE"], STICKC = [YELLOW, ORANGE, YELLOW];
+  function spinDial() {
+    dial.tgt = Math.random(); dial.vel += (Math.random() < 0.5 ? -1 : 1) * 6; dial.next = 3.5;
+  }
+  var DIAL = { name: "FUN DIAL", dur: 14, draw: function (w, h, t, dt) {
+    var cx = 74, cy = 116, R = 60, k, a0 = Math.PI * 0.75, sweep = Math.PI * 1.5;
+    dial.next -= dt;
+    if (dial.next <= 0) { dial.tgt = Math.random(); dial.next = 1.8 + Math.random() * 2.2; }
+    dial.vel += ((dial.tgt - dial.v) * 60 - dial.vel * 9) * dt; dial.v += dial.vel * dt;
+    var v = clamp(dial.v, -0.05, 1.05), vc = clamp(v, 0, 1);
+    circ(cx, cy, R, 0.9, 1, 2, SILVER);
+    var lit = [], dim = [];
+    for (k = 0; k < 40; k++) {
+      var ta = k / 40 * TAU, rel = ((ta - a0) % TAU + TAU) % TAU;
+      (rel <= vc * sweep ? lit : dim).push(ta);
+    }
+    [[dim, C(0.7, 0.9, SILVER)], [lit, C(1, 1, ORANGE)]].forEach(function (g) {
+      ctx.strokeStyle = g[1]; ctx.lineWidth = 2; ctx.beginPath();
+      g[0].forEach(function (ta) { ctx.moveTo(cx + Math.cos(ta) * (R - 9), cy + Math.sin(ta) * (R - 9)); ctx.lineTo(cx + Math.cos(ta) * (R - 3), cy + Math.sin(ta) * (R - 3)); });
+      ctx.stroke();
+    });
+    ctx.fillStyle = C(0.95, 1, YELLOW); ctx.beginPath(); ctx.arc(cx, cy, R * 0.6, 0, TAU); ctx.fill();
+    var aa = a0 + v * sweep, ax = cx + Math.cos(aa) * R * 0.5, ay = cy + Math.sin(aa) * R * 0.5;
+    ctx.strokeStyle = "#000"; ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.beginPath();
+    ctx.moveTo(cx, cy); ctx.lineTo(ax, ay);
+    ctx.moveTo(ax + Math.cos(aa + 2.6) * 9, ay + Math.sin(aa + 2.6) * 9); ctx.lineTo(ax, ay); ctx.lineTo(ax + Math.cos(aa - 2.6) * 9, ay + Math.sin(aa - 2.6) * 9);
+    ctx.stroke(); ctx.lineCap = "butt";
+    ctx.fillStyle = C(1, 1, SILVER); ctx.beginPath(); ctx.arc(cx, cy, 5, 0, TAU); ctx.fill();
+    twinkle(cx, cy, 9 + 3 * Math.sin(t * 5), 0.9, SILVER);
+    for (k = 0; k < 3; k++) {
+      var sx = 146 + k * 22, sy = 44, sh = 144, lv = clamp(0.25 + vc * 0.55 + 0.2 * Math.sin(t * (1.3 + k * 0.4) + k * 2), 0.05, 1);
+      ctx.save(); rr(sx, sy, 12, sh, 6); ctx.clip();
+      ctx.fillStyle = C(0.18, 1, STICKC[k]); ctx.fillRect(sx, sy, 12, sh);
+      ctx.fillStyle = C(0.95, 1, STICKC[k]); ctx.fillRect(sx, sy + sh * (1 - lv), 12, sh * lv);
+      ctx.restore();
+      rr(sx, sy, 12, sh, 6); ctx.strokeStyle = C(0.6, 1, STICKC[k]); ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    lab("SET " + DSET[Math.min(5, Math.floor(vc * 6))], 8, 205, "left");
+    lab("PWR " + pad3(Math.round(vc * 100)), w - 8, 205, "right");
+  } };
+
+  var targets = [], TLAB = ["CANDY", "GHOST", "CAT", "KID", "BAT", "CANDY"], sweepA = 0;
+  var BLIP = { CANDY: SPR.b_candy, GHOST: SPR.b_ghost, CAT: SPR.b_cat, KID: SPR.b_kid, BAT: SPR.b_bat };
+  TLAB.forEach(function (l) {
+    targets.push({ a: Math.random() * TAU, r: 0.25 + Math.random() * 0.65, lab: l, lit: 0, da: (Math.random() - 0.5) * 0.1 });
+  });
+  var RADAR = { name: "RADAR", dur: 16, draw: function (w, h, t, dt) {
+    var cx = w / 2, cy = 110, R = 72, k, a, n = 0;
+    ctx.fillStyle = C(0.1, 1, PURPLE); ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+    for (k = 1; k <= 3; k++) circ(cx, cy, R * k / 3, k === 3 ? 0.9 : 0.45, 1, k === 3 ? 1.5 : 1, PURPLE);
+    line(cx - R, cy, cx + R, cy, 0.35, 1, 1, PURPLE); line(cx, cy - R, cx, cy + R, 0.35, 1, 1, PURPLE);
+    ctx.strokeStyle = C(0.6, 0.85, SILVER); ctx.lineWidth = 1; ctx.beginPath();
+    for (k = 0; k < 36; k++) {
+      a = k / 36 * TAU; var l = k % 3 ? 4 : 8;
+      ctx.moveTo(cx + Math.cos(a) * (R + 3), cy + Math.sin(a) * (R + 3)); ctx.lineTo(cx + Math.cos(a) * (R + 3 + l), cy + Math.sin(a) * (R + 3 + l));
+    }
+    ctx.stroke();
+    sweepA = (sweepA + dt * 1.7) % TAU;
+    for (k = 0; k < 14; k++) {
+      ctx.fillStyle = C(0.28 * (1 - k / 14), 1, YELLOW);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R, sweepA - (k + 1) * 0.07, sweepA - k * 0.07); ctx.closePath(); ctx.fill();
+    }
+    line(cx, cy, cx + Math.cos(sweepA) * R, cy + Math.sin(sweepA) * R, 1, 1, 2, YELLOW);
+    targets.forEach(function (g) {
+      g.a = (g.a + g.da * dt + TAU) % TAU;
+      if ((sweepA - g.a + TAU) % TAU < 0.12) g.lit = 1;
+      g.lit = Math.max(0, g.lit - dt * 0.45);
+      if (g.lit === 0 && Math.random() < dt * 0.05) g.r = 0.25 + Math.random() * 0.65;
+      var x = cx + Math.cos(g.a) * g.r * R, y = cy + Math.sin(g.a) * g.r * R, bm = BLIP[g.lab];
+      if (g.lit > 0.02) spr(bm, x - bm[0].length, y - bm.length, 2, 0.2 + g.lit * 0.8, false, ORANGE);
+      if (g.lit > 0.35) { txt(g.lab, x + 9, y - 5, 15, g.lit, "left", 1, SILVER); n++; }
+    });
+    lab("CONTACTS " + pad2(n), 8, 205, "left");
+    lab("RNG 50M", w - 8, 205, "right");
+  } };
+
+  var CORE = { name: "REACTOR", dur: 11, draw: function (w, h, t) {
+    var cx = w / 2, cy = 112, n = 40, f = clamp(0.62 + 0.22 * Math.sin(t * 0.45) + level * 0.9, 0, 1), i, k;
+    ctx.lineWidth = 12;
+    for (i = 0; i < n; i++) {
+      ctx.strokeStyle = i / n < f ? C(0.95, 1, mix(ORANGE, YELLOW, i / n)) : C(0.2, 1, PURPLE);
+      ctx.beginPath(); ctx.arc(cx, cy, 64, -Math.PI / 2 + i / n * TAU + 0.03, -Math.PI / 2 + (i + 1) / n * TAU - 0.03); ctx.stroke();
+    }
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * 0.6);
+    ctx.setLineDash([6, 6]); circ(0, 0, 46, 0.7, 1, 1.5, SILVER); ctx.setLineDash([]);
+    ctx.rotate(-t * 1.5);
+    ctx.strokeStyle = C(0.9, 1, PURPLE); ctx.lineWidth = 2;
+    for (k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(0, 0, 80, k * TAU / 3, k * TAU / 3 + 0.8); ctx.stroke(); }
+    ctx.restore();
+    txt(Math.round(f * 100) + "%", cx, cy + 14, 46, 1, "center");
+    lab("OUTPUT " + (1.21 + Math.sin(t * 1.3) * 0.08 + level).toFixed(2) + " GW", cx, 205, "center");
+  } };
+
+  var LOCK = { name: "TARGET LOCK", dur: 13.5, draw: function (w, h, t, dt, lt) {
+    var cx = w / 2, cy = 112, cyc = 4.5, p = (lt % cyc) / cyc, ic = ICONS[Math.floor(lt / cyc) % ICONS.length];
+    var locked = p > 0.62, q = locked ? 0 : 1 - p / 0.62;
+    var ps = Math.min(10, Math.floor(110 / Math.max(ic.px[0].length, ic.px.length)));
+    bitmap(ic.px, cx, cy, ps, function () { return locked ? 1 : 0.45 + Math.random() * 0.35; }, ic.c);
+    var s = 62 + q * 28, jx = Math.sin(t * 9) * 6 * q, jy = Math.cos(t * 7) * 6 * q;
+    var blink = Math.floor(t * 5) % 2 === 0;
+    brackets(cx - s + jx, cy - s + jy, s * 2, s * 2, 14, locked && !blink ? 0.6 : 1, 2, locked ? YELLOW : PURPLE);
+    ctx.strokeStyle = C(0.8, 1, SILVER); ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(cx - s - 12 + jx, cy + jy); ctx.lineTo(cx - s - 2 + jx, cy + jy); ctx.moveTo(cx + s + 2 + jx, cy + jy); ctx.lineTo(cx + s + 12 + jx, cy + jy);
+    ctx.moveTo(cx + jx, cy - s - 12 + jy); ctx.lineTo(cx + jx, cy - s - 2 + jy); ctx.moveTo(cx + jx, cy + s + 2 + jy); ctx.lineTo(cx + jx, cy + s + 12 + jy);
+    ctx.stroke();
+    var dots = "...".slice(0, 1 + Math.floor(t * 4) % 3);
+    txt(locked ? "LOCKED: " + ic.n : "ACQUIRING" + dots, cx, 205, 17, locked && blink ? 1 : 0.85, "center");
+  } };
+
+  /* ---------- modules: center slot ---------- */
+  var hist = [], histN = 0;
+  function wpath(arr, a, lw, x0, x1, cy, A, c) {
+    ctx.strokeStyle = C(a, 1, c); ctx.lineWidth = lw; ctx.lineJoin = "round"; ctx.beginPath();
+    for (var i = 0; i < arr.length; i++) {
+      var u = i / (arr.length - 1), win = Math.pow(Math.sin(Math.PI * u), 0.5);
+      var x = x0 + (x1 - x0) * u, y = cy - arr[i] * win * A;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  var SIGNAL = { name: "SIGNAL", dur: 18, draw: function (w, h) {
+    var x0 = 12, x1 = w - 12, y0 = 32, y1 = h - 26, cy = (y0 + y1) / 2, A = (y1 - y0) / 2 - 4, j;
+    grid(x0, y0, x1, y1, 10, 6);
+    if ((histN++ & 1) === 0) { hist.unshift(Float32Array.from(wave)); if (hist.length > 4) hist.pop(); }
+    for (j = hist.length - 1; j >= 1; j--) wpath(hist[j], 0.5 * (1 - j / 4), 1.5, x0, x1, cy, A, ORANGE);
+    wpath(wave, 1, 2.4, x0, x1, cy, A, YELLOW);
+    lab("CH1 DAD-WAVE", x0, h - 8, "left");
+    lab("LVL " + pad2(Math.min(99, Math.round(level * 160))), x1, h - 8, "right");
+  } };
+
+  var peaks = new Float32Array(32);
+  var SPECTRUM = { name: "SPECTRUM", dur: 11, draw: function (w, h, t, dt) {
+    var x0 = 12, x1 = w - 12, y0 = 34, y1 = h - 26, n = 32, bw = (x1 - x0) / n, sh = 5, ns = Math.floor((y1 - y0) / sh), i, x;
+    ctx.lineWidth = bw - 2; ctx.setLineDash([sh - 1, 1]);
+    ctx.strokeStyle = C(0.12, 1, PURPLE); ctx.beginPath();
+    for (i = 0; i < n; i++) { x = x0 + i * bw + bw / 2; ctx.moveTo(x, y1); ctx.lineTo(x, y1 - ns * sh); }
+    ctx.stroke();
+    var g = ctx.createLinearGradient(0, y1, 0, y0);
+    g.addColorStop(0, C(0.9, 1, PURPLE)); g.addColorStop(0.5, C(1, 1, ORANGE)); g.addColorStop(1, C(1, 1, YELLOW));
+    ctx.strokeStyle = g; ctx.beginPath();
+    for (i = 0; i < n; i++) {
+      var v = clamp(spec[i], 0, 1), lit = Math.round(v * ns);
+      peaks[i] = Math.max(peaks[i] - dt * 0.35, v);
+      if (lit > 0) { x = x0 + i * bw + bw / 2; ctx.moveTo(x, y1); ctx.lineTo(x, y1 - lit * sh); }
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = C(1, 1, SILVER);
+    for (i = 0; i < n; i++) ctx.fillRect(x0 + i * bw + 1, y1 - peaks[i] * ns * sh - 3, bw - 2, 2);
+    lab("100HZ", x0, h - 8, "left");
+    txt("FFT 32 BAND", (x0 + x1) / 2, h - 8, 16, 0.6, "center", 0.85, SILVER);
+    lab("8KHZ", x1, h - 8, "right");
+  } };
+
+  var ecgBuf = null, ecgIdx = 0, ecgPh = 0, ecgAcc = 0, bpm = 72, beat = 0;
+  function ecgVal(p) {
+    function g(c, wd, a) { var d = (p - c) / wd; return a * Math.exp(-d * d); }
+    return g(0.12, 0.025, 0.12) + g(0.27, 0.008, -0.15) + g(0.3, 0.01, 1) + g(0.33, 0.009, -0.3) + g(0.55, 0.05, 0.25);
+  }
+  var PULSE = { name: "PULSE", dur: 12, draw: function (w, h, t, dt) {
+    var x0 = 12, x1 = w - 12, y0 = 34, y1 = h - 26, L = Math.floor(x1 - x0), base = y1 - 28, A = 100, i;
+    if (!ecgBuf || ecgBuf.length !== L) { ecgBuf = new Float32Array(L); ecgIdx = 0; }
+    grid(x0, y0, x1, y1, 10, 6);
+    bpm += ((68 + level * 110) - bpm) * Math.min(1, dt * 0.8);
+    ecgAcc += dt * 110;
+    while (ecgAcc >= 1) {
+      ecgAcc -= 1; ecgPh += bpm / 60 / 110;
+      if (ecgPh >= 1) { ecgPh -= 1; beat = 1; }
+      ecgBuf[ecgIdx] = ecgVal(ecgPh) + (Math.random() - 0.5) * 0.02; ecgIdx = (ecgIdx + 1) % L;
+    }
+    beat = Math.max(0, beat - dt * 3);
+    ctx.strokeStyle = C(1); ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.beginPath();
+    var on = false;
+    for (i = 0; i < L; i++) {
+      if ((i - ecgIdx + L) % L < 14) { on = false; continue; }
+      var y = base - ecgBuf[i] * A;
+      if (on) ctx.lineTo(x0 + i, y); else { ctx.moveTo(x0 + i, y); on = true; }
+    }
+    ctx.stroke();
+    var hi = (ecgIdx - 1 + L) % L;
+    ctx.fillStyle = C(1, 1, SILVER); ctx.beginPath(); ctx.arc(x0 + hi, base - ecgBuf[hi] * A, 3.5, 0, TAU); ctx.fill();
+    var hps = 3 + beat * 1.5;
+    spr(SPR.heart, x0 + 14 - 3.5 * hps, 50 - 3 * hps, hps, 0.35 + beat * 0.65, false, ORANGE);
+    txt("BPM", x1 - 62, 56, 16, 0.9, "right", 0.85, SILVER);
+    txt(pad3(Math.round(bpm)), x1, 58, 36, 1, "right");
+    lab("LEAD II", x0, h - 8, "left");
+    lab("SPO2 99%", x1, h - 8, "right");
+  } };
+
+  var RAT = [[3, 2], [5, 4], [1, 2], [3, 4], [2, 3]];
+  var HARMONIC = { name: "HARMONIC", dur: 9, draw: function (w, h, t) {
+    var x0 = 12, x1 = w - 12, y0 = 32, y1 = h - 26, cx = w / 2, cy = (y0 + y1) / 2;
+    var Ax = (x1 - x0) / 2 - 8, Ay = (y1 - y0) / 2 - 6, r = RAT[Math.floor(t / 7) % RAT.length], d = t * 0.6;
+    var amp = clamp(0.72 + level * 1.4, 0, 1);
+    grid(x0, y0, x1, y1, 10, 6);
+    var g = ctx.createLinearGradient(x0, 0, x1, 0);
+    g.addColorStop(0, C(1, 1, ORANGE)); g.addColorStop(0.5, C(1, 1, YELLOW)); g.addColorStop(1, C(1, 1, ORANGE));
+    ctx.strokeStyle = g; ctx.lineWidth = 1.8; ctx.beginPath();
+    for (var i = 0; i <= 300; i++) {
+      var s = i / 300 * TAU, x = cx + Math.sin(r[0] * s + d) * Ax * amp, y = cy + Math.sin(r[1] * s) * Ay * amp;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+    lab("RATIO " + r[0] + ":" + r[1], x0, h - 8, "left");
+    lab("PHASE " + pad3(Math.round(d * 180 / Math.PI) % 360), x1, h - 8, "right");
+  } };
+
+  /* ---------- modules: right slot ---------- */
+  var VSP = [0.7, 0.45, 0.6, 0.35, 0.9], VPH = [0, 1.3, 2.1, 4, 0.6], SEGC = [];
+  for (var sg = 0; sg < 18; sg++) SEGC.push(sg < 9 ? mix(PURPLE, YELLOW, sg / 9) : mix(YELLOW, ORANGE, (sg - 9) / 9));
+  var VITALS = { name: "VITALS", dur: 13, draw: function (w, h, t) {
+    var names = ["PUNS", "SPOOK", "CANDY", "COFFEE", "SPARKLE"], x0 = 10, x1 = w - 10, y = 50, ns = 18, sw = (x1 - x0) / ns;
+    for (var i = 0; i < 5; i++) {
+      var v = i < 4 ? 0.5 + 0.44 * Math.sin(t * VSP[i] + VPH[i]) : 0.82 + 0.16 * Math.sin(t * VSP[i]), lit = Math.round(v * ns);
+      txt(names[i], x0, y, 19, 1, "left", 1, SILVER);
+      txt(pad2(Math.min(99, Math.round(v * 99))), x1, y, 19, 0.95, "right");
+      for (var s = 0; s < ns; s++) {
+        ctx.fillStyle = s < lit ? C(0.95, 1, SEGC[s]) : C(0.14, 1, PURPLE);
+        ctx.fillRect(x0 + s * sw, y + 5, sw - 2, 8);
+      }
+      y += 31;
+    }
+  } };
+
+  var JACK_FACE = [
+    [[-0.5, -0.12], [-0.16, -0.12], [-0.33, -0.45]],
+    [[0.16, -0.12], [0.5, -0.12], [0.33, -0.45]],
+    [[-0.09, 0.06], [0.09, 0.06], [0, -0.08]],
+    [[-0.6, 0.18], [-0.42, 0.3], [-0.28, 0.22], [-0.14, 0.32], [0, 0.24], [0.14, 0.32], [0.28, 0.22], [0.42, 0.3], [0.6, 0.18], [0.42, 0.48], [0, 0.55], [-0.42, 0.48]]
+  ];
+  var PUMPKIN = { name: "PUMPKIN SCAN", dur: 12, draw: function (w, h, t) {
+    var cx = w / 2, cy = 118, R = 54, yaw = t * 0.7, pit = 0.32, ribs = 12, segs = 12, r, s, prev, cur;
+    var cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pit), sp = Math.sin(pit);
+    function P3(x, y, z) {
+      var x1 = x * cyw + z * syw, z1 = -x * syw + z * cyw;
+      var y2 = y * cp - z1 * sp, z2 = y * sp + z1 * cp, f = 300 / (300 + z2);
+      return [cx + x1 * f, cy + y2 * f, z2];
+    }
+    function pt(th, ph, out) {
+      var groove = 1 - 0.08 * Math.pow(Math.abs(Math.cos(th * ribs / 2)), 3);
+      var rad = Math.pow(Math.max(0, Math.cos(ph)), 0.7) * R * 1.15 * groove * (out || 1);
+      return P3(rad * Math.cos(th), Math.sin(ph) * R * 0.78, rad * Math.sin(th));
+    }
+    function seg(a, b) {
+      var z = (a[2] + b[2]) / 2;
+      ctx.strokeStyle = C(0.15 + 0.85 * clamp((R - z) / (2 * R), 0, 1), 1, ORANGE);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    ctx.lineWidth = 1.4;
+    for (r = 0; r < ribs; r++) {
+      var th = r / ribs * TAU; prev = pt(th, -Math.PI / 2);
+      for (s = 1; s <= segs; s++) { cur = pt(th, -Math.PI / 2 + s / segs * Math.PI); seg(prev, cur); prev = cur; }
+    }
+    [-0.6, 0, 0.6].forEach(function (ph) {
+      prev = pt(0, ph);
+      for (s = 1; s <= 36; s++) { cur = pt(s / 36 * TAU, ph); seg(prev, cur); prev = cur; }
+    });
+    var fa = clamp(-pt(0, 0)[2] / (R * 0.5), 0, 1);
+    if (fa > 0.05) {
+      ctx.fillStyle = C(fa * (0.75 + Math.random() * 0.25), 1, YELLOW);
+      JACK_FACE.forEach(function (poly) {
+        ctx.beginPath();
+        poly.forEach(function (v, i) { var q = pt(v[0], v[1], 1.02); if (i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); });
+        ctx.closePath(); ctx.fill();
+      });
+    }
+    var a = P3(0, -R * 0.7, 0), b = P3(3, -R * 0.78 - 14, 1), c = P3(11, -R * 0.78 - 20, 2);
+    ctx.strokeStyle = C(1, 1, PURPLE); ctx.lineWidth = 3; ctx.beginPath();
+    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
+    lab("ID 10-31", 8, 205, "left");
+    lab("ROT " + pad3(Math.round(yaw * 180 / Math.PI) % 360), w - 8, 205, "right");
+  } };
+
+  var JOKES = [
+    ["WHY DON'T SKELETONS FIGHT?", "THEY DON'T HAVE THE GUTS."],
+    ["WHAT ROOM DOES A GHOST AVOID?", "THE LIVING ROOM."],
+    ["WHY DID THE VAMPIRE READ THE PAPER?", "FOR THE CIRCULATION."],
+    ["WHAT DO YOU CALL A CHUBBY PUMPKIN?", "A PLUMPKIN."],
+    ["WHAT IS A GHOST'S FAVORITE FRUIT?", "BOO-BERRIES."],
+    ["WHAT DO YOU CALL A WITCH AT THE BEACH?", "A SAND-WITCH."],
+    ["HOW DO YOU FIX A BROKEN PUMPKIN?", "WITH A PUMPKIN PATCH."],
+    ["WHY ARE GHOSTS BAD LIARS?", "YOU CAN SEE RIGHT THROUGH THEM."],
+    ["WHAT MUSIC DO MUMMIES LIKE?", "WRAP MUSIC."],
+    ["WHAT DO ROBOTS EAT ON HALLOWEEN?", "MICROCHIPS."],
+    ["WHY IS THIS ROBOT SO SHINY?", "IT HAS A FOIL-PROOF PLAN."]
+  ];
+  var jokeI = Math.floor(Math.random() * JOKES.length), jokeLastLt = 99, jokeWrap = null;
+  var DADJOKE = { name: "DAD JOKE", dur: 10, draw: function (w, h, t, dt, lt) {
+    var sz = 19, x0 = 10, rate = 22;
+    if (lt < jokeLastLt || !jokeWrap) {
+      if (lt < jokeLastLt) jokeI = (jokeI + 1) % JOKES.length;
+      jokeWrap = [wrap(JOKES[jokeI][0], w - 20, sz), wrap(JOKES[jokeI][1], w - 20, sz)];
+    }
+    jokeLastLt = lt;
+    var j = JOKES[jokeI], setup = jokeWrap[0], punch = jokeWrap[1];
+    typeLines(setup, Math.floor(lt * rate), x0, 52, sz, 0.95, SILVER);
+    var tDone = j[0].length / rate, tP = tDone + 1.4, py = 52 + setup.length * 22 + 14;
+    if (lt > tDone && lt < tP) txt("...".slice(0, 1 + Math.floor(lt * 3) % 3), x0, py, sz, 0.8, "left", 1, PURPLE);
+    if (lt >= tP) typeLines(punch, Math.floor((lt - tP) * rate), x0, py, sz, 1, YELLOW);
+    if (lt >= tP + j[1].length / rate + 0.5) {
+      var b = Math.floor(lt * 6) % 2;
+      txt("BA DUM TSS!", w / 2, 202, 24, b ? 1 : 0.6, "center", 1, ORANGE);
+      spr(SPR.star, 12, 186, 2.4, b ? 1 : 0.35, false, YELLOW); spr(SPR.star, w - 24, 186, 2.4, b ? 0.35 : 1, false, SILVER);
+    }
+  } };
+
+  var LOGPOOL = ["[OK] CANDY.SYS", "[OK] PUN ENGINE UP", "[WARN] SUGAR HIGH", "[OK] GHOST FILTER", "[INFO] DOORBELL",
+    "[OK] COSTUME 100%", "[WARN] BEDTIME NEAR", "[OK] JOKES: 9001", "[INFO] MOON: SPOOKY", "[ERR] TOO MANY KITKAT",
+    "[OK] BOO.EXE READY", "[WARN] CANDY TAX DUE", "[INFO] KIDS: MANY", "[OK] SERVOS WARM", "[OK] BAT RADAR SYNC", "[ERR] NAP NOT FOUND",
+    "[OK] GLITTER 100%", "[INFO] SPARKLE: MAX", "[WARN] TOO SHINY", "[OK] FOIL POLISHED"];
+  function logC(s) { return s.indexOf("[ERR") === 0 ? ORANGE : s.indexOf("[WARN") === 0 ? YELLOW : s.indexOf("[INFO") === 0 ? PURPLE : SILVER; }
+  var logs = [], logAcc = 0;
+  for (var li = 0; li < 6; li++) logs.push(pick(LOGPOOL));
+  var SYSLOG = { name: "SYS LOG", dur: 11, draw: function (w, h, t, dt) {
+    logAcc += dt;
+    if (logAcc > 0.75) { logAcc = 0; logs.push(pick(LOGPOOL)); if (logs.length > 8) logs.shift(); }
+    for (var i = 0; i < logs.length; i++) {
+      var last = i === logs.length - 1;
+      txt(logs[i], 10, 48 + i * 18, 17, last ? 1 : 0.35 + 0.6 * (i + 1) / logs.length, "left", 1, logC(logs[i]));
+    }
+    if (Math.floor(t * 2.5) % 2 === 0) { ctx.fillStyle = C(1); ctx.fillRect(10, 48 + logs.length * 18 - 12, 8, 13); }
+  } };
+
+  /* ---------- slots ---------- */
+  var slots = [
+    { x: 16, y: 52, w: 210, h: 210, mods: [FACE, DIAL, RADAR, CORE, LOCK], i: 0, since: 0, tr: -1, next: 0, blank: false, delay: 0 },
+    { x: 236, y: 52, w: 308, h: 210, mods: [SIGNAL, SPECTRUM, PULSE, HARMONIC], i: 0, since: -5, tr: -1, next: 0, blank: false, delay: 0 },
+    { x: 554, y: 52, w: 210, h: 210, mods: [VITALS, PUMPKIN, DADJOKE, SYSLOG], i: 0, since: -9, tr: -1, next: 0, blank: false, delay: 0 }
+  ];
+  slots.forEach(function (s) { GPTS.push([s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h]); });
+  function go(s) { s.next = (s.i + 1) % s.mods.length; s.tr = 0; s.since = 0; }
+  function updateSlots(dt) {
+    slots.forEach(function (s) {
+      if (s.delay > 0) {
+        s.delay -= dt;
+        if (s.delay <= 0) { s.delay = 0; s.next = s.i; s.tr = 0; s.since = 0; }
+        return;
+      }
+      s.since += dt;
+      if (s.tr >= 0) {
+        var o = s.tr; s.tr += dt / 0.6;
+        if (o < 0.5 && s.tr >= 0.5) { s.i = s.next; s.blank = false; }
+        if (s.tr >= 1) s.tr = -1;
+      } else if (s.since >= s.mods[s.i].dur) go(s);
+    });
+  }
+  var NOISEC = [PURPLE, YELLOW, SILVER, ORANGE];
+  function drawSlot(s, t, dt) {
+    var e = s.tr >= 0 ? 1 - Math.abs(s.tr * 2 - 1) : 0, m = s.mods[s.i], k;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(s.x + 1, s.y + 1, s.w - 2, s.h - 2); ctx.clip();
+    if (!s.blank) {
+      ctx.save();
+      ctx.translate(s.x + (e ? (Math.random() - 0.5) * 16 * e : 0), s.y);
+      ink0 = YELLOW;
+      m.draw(s.w, s.h, t, dt, s.since);
+      ctx.restore();
+    }
+    var noise = s.blank && s.tr < 0 ? 12 : Math.floor(60 * e);
+    for (k = 0; k < noise; k++) {
+      ctx.fillStyle = C(Math.random() * 0.8, 1, NOISEC[k & 3]);
+      ctx.fillRect(s.x + Math.random() * s.w, s.y + Math.random() * s.h, 2 + Math.random() * 34, 1 + Math.random() * 2);
+    }
+    if (s.tr >= 0) { ctx.fillStyle = C(1, 1, SILVER); ctx.fillRect(s.x, s.y + s.h * s.tr, s.w, 2); }
+    ctx.restore();
+    ctx.fillStyle = "#000"; ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, 24);
+    ctx.fillStyle = C(0.24, 1, PURPLE); ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, 24);
+    txt(s.blank ? "> ----" : "> " + m.name, s.x + 8, s.y + 19, 19, 1, "left", 1, YELLOW);
+    for (k = 0; k < s.mods.length; k++) {
+      ctx.fillStyle = k === s.i && !s.blank ? C(1, 1, ORANGE) : C(0.5, 1, PURPLE);
+      ctx.fillRect(s.x + s.w - 14 - (s.mods.length - 1 - k) * 10, s.y + 10, 6, 6);
+    }
+    line(s.x + 1, s.y + 25.5, s.x + s.w - 1, s.y + 25.5, 0.6, 1, 1, PURPLE);
+    ctx.strokeStyle = C(0.7, 1, PURPLE); ctx.lineWidth = 1; ctx.strokeRect(s.x + 0.5, s.y + 0.5, s.w - 1, s.h - 1);
+    brackets(s.x, s.y, s.w, s.h, 10, 1, 2, SILVER);
+  }
+
+  /* ---------- critters that wander across the screen ---------- */
+  var critter = null, nextCritter = 8;
+  function spawnCritter() {
+    var k = pick(["bat", "bat", "ghost", "spider", "cat"]);
+    if (k === "bat") critter = { k: k, x: -40, y: 18 + Math.random() * 60, vx: 110 + Math.random() * 40, t: 0 };
+    else if (k === "ghost") critter = { k: k, x: W + 40, y: 110 + Math.random() * 110, vx: -55, t: 0, said: false };
+    else if (k === "spider") critter = { k: k, x: 40 + Math.random() * 690, y: 6, t: 0 };
+    else critter = { k: k, x: -40, y: 339, vx: 60, t: 0 };
+  }
+  function updateCritter(dt) {
+    if (!critter) { nextCritter -= dt; if (nextCritter <= 0) { spawnCritter(); nextCritter = 15 + Math.random() * 18; } return; }
+    var c = critter; c.t += dt;
+    if (c.k === "spider") {
+      var drop = 110;
+      if (c.t < 2) c.y = 6 + drop * (1 - Math.pow(1 - c.t / 2, 3));
+      else if (c.t < 4.5) c.y = 6 + drop + Math.sin((c.t - 2) * 4) * 3;
+      else if (c.t < 6) c.y = 6 + drop * (1 - (c.t - 4.5) / 1.5);
+      else critter = null;
+      return;
+    }
+    c.x += c.vx * dt;
+    if (c.k === "ghost" && !c.said && c.x < W / 2) { c.said = true; spawn({ txt: "BOO!", x: c.x + 16, y: c.y - 8, vy: -30, life: 1.3, sz: 24, c: SILVER }); }
+    if (c.x < -60 || c.x > W + 60) critter = null;
+  }
+  function drawCritter() {
+    var c = critter;
+    if (!c) return;
+    if (c.k === "bat") spr(Math.floor(c.t * 8) % 2 ? SPR.batA : SPR.batB, c.x, c.y + Math.sin(c.t * 6) * 8, 3, 1, false, PURPLE);
+    else if (c.k === "ghost") spr(ICONS[2].px, c.x, c.y + Math.sin(c.t * 2.5) * 10, 3, 0.55 + 0.25 * Math.sin(c.t * 7), false, SILVER);
+    else if (c.k === "spider") {
+      line(c.x + 13.5, 6, c.x + 13.5, c.y, 0.7, 1, 1, SILVER);
+      spr(c.t > 2 && c.t < 4.5 && Math.floor(c.t * 6) % 2 ? SPR.spider2 : SPR.spider, c.x, c.y, 3, 1, false, ORANGE);
+    } else spr(Math.floor(c.t * 6) % 2 ? SPR.catA : SPR.catB, c.x, c.y, 2.5, 1, false, PURPLE);
+  }
+
+  /* ---------- ticker messages ---------- */
+  var TICKS = [
+    "> HAPPY HALLOWEEN, HUMANS",
+    "> SCANNING CANDY... TARGET ACQUIRED",
+    "> DETECTING GHOSTS... JUST DAD, FALSE ALARM",
+    "> BOOP THE ROBOT FACE. I DARE YOU",
+    "> PUMPKIN SPICE LEVELS: CRITICAL",
+    "> RUNNING DAD_JOKE.EXE... STAND BY",
+    "> WARNING: FUN SIZE IS NOT FULL SIZE",
+    "> NICE COSTUME. ANALYZING... 10/10",
+    "> SPARKLE LEVELS: MAXIMUM",
+    "> PLOTTING TRICK-OR-TREAT ROUTE...",
+    "> SKELETON FIRMWARE UPDATE: 99% (BONES)",
+    "> NOW IN PURPLE. VERY FANCY",
+    "> CANDY TAX COLLECTED: 3 SNICKERS",
+    "> I AM NOT A TOASTER. PLEASE STOP ASKING",
+    "> SHINY ROBOT. NO FINGERPRINTS PLEASE",
+    "> BOO DETECTED. BOO-LEAN LOGIC ENGAGED",
+    "> HI HUNGRY, I'M DADBOT2000",
+    "> SAY TRICK OR TREAT TO CONTINUE",
+    "> BATTERY LOW: NEED SNACK"
+  ];
+  var tIdx = 0, tChars = 0, tHold = 0, tAcc = 0, tMsg = null;
+  // jump the ticker to a one-off message, then resume the rotation
+  function say(s) { tMsg = s; tChars = 0; tHold = 0; }
+  function tickNow() { return tMsg || TICKS[tIdx]; }
+
+  /* ---------- candy counter, costume scan, eco mode ---------- */
+  var candyBump = 0, holdTimer = null;
+  function addCandy(x, y) {
+    candy = Math.min(999, candy + 1); candyBump = 1; save("dadbot.candy", candy);
+    spawn({ txt: "+1", x: x, y: y + 16, vy: -40, life: 0.9, sz: 22, c: ORANGE });
+    if (candy % 10 === 0) { candyRain(false); setExpr("happy", 2); say("> CANDY MILESTONE: " + candy + " PIECES. NOM NOM"); }
+  }
+  function resetCandy() {
+    candy = 0; save("dadbot.candy", 0);
+    spawn({ txt: "RESET", x: 540, y: 60, vy: -30, life: 1.2, sz: 22, c: SILVER });
+    say("> CANDY COUNTER RESET. FRESH START");
+  }
+
+  var SCAN_T = 2.8, scan = { on: false, t: 0, rated: false, rating: "", cat: "" };
+  var RATINGS = ["10/10", "11/10", "12/10", "100%", "A+++", "9001/10"];
+  var CATS = ["SPOOKTACULAR", "LEGENDARY", "MAXIMUM CUTENESS", "EXTREMELY SPOOKY", "CANDY WORTHY", "HALL OF FAME", "PURE AWESOME"];
+  function startScan() {
+    if (scan.on || alertState.on) return;
+    scan.on = true; scan.t = 0; scan.rated = false; scan.rating = pick(RATINGS); scan.cat = pick(CATS);
+    setExpr("wide", SCAN_T); say("> SCANNING COSTUME... HOLD STILL");
+  }
+  function updateScan(dt) {
+    if (!scan.on) return;
+    scan.t += dt;
+    if (!scan.rated && scan.t >= SCAN_T) {
+      scan.rated = true; setExpr("heart", 5); candyRain(true);
+      say("> COSTUME RATED " + scan.rating + ": " + scan.cat + "!");
+    }
+    if (scan.t > SCAN_T + 6) scan.on = false;
+  }
+  function drawScan(t) {
+    if (!scan.on) return;
+    var st = scan.t, k;
+    if (st < SCAN_T) {
+      var p = st / SCAN_T * 2, u = p < 1 ? p : 2 - p, y = 14 + u * (H - 28), dir = p < 1 ? -1 : 1;
+      var g = ctx.createLinearGradient(0, y, 0, y + dir * 44);
+      g.addColorStop(0, C(0.4, 1, PURPLE)); g.addColorStop(1, C(0, 1, PURPLE));
+      ctx.fillStyle = g; ctx.fillRect(10, Math.min(y, y + dir * 44), W - 20, 44);
+      ctx.fillStyle = C(1, 1, YELLOW); ctx.fillRect(10, y - 1.5, W - 20, 3);
+      for (k = 0; k < 5; k++) twinkle(10 + Math.random() * (W - 20), y, 3 + Math.random() * 5, 1, SILVER);
+      ctx.fillStyle = "rgba(0,0,0,0.9)"; ctx.fillRect(240, 150, 300, 44);
+      ctx.strokeStyle = C(1, 1, PURPLE); ctx.lineWidth = 2; ctx.strokeRect(240, 150, 300, 44);
+      txt("SCANNING COSTUME " + pad2(Math.min(99, Math.floor(st / SCAN_T * 100))) + "%", W / 2, 180, 28, 1, "center", 1, YELLOW);
+      return;
+    }
+    var e = Math.min(1, (st - SCAN_T) / 0.25), bx = 160, by = 62, bw = 460, bh = 236, blink = Math.floor(t * 4) % 2 === 0;
+    ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(0.8 + 0.2 * e, 0.8 + 0.2 * e); ctx.translate(-W / 2, -H / 2);
+    ctx.globalAlpha = e;
+    rr(bx, by, bw, bh, 12); ctx.fillStyle = "rgba(0,0,0,0.94)"; ctx.fill();
+    ctx.strokeStyle = C(1, 1, PURPLE); ctx.lineWidth = 3; ctx.stroke();
+    // star border, like the cutouts on the costume panel
+    var n = 0;
+    for (k = bx + 16; k < bx + bw - 20; k += 30) { spr(SPR.star, k, by + 8, 2, Math.sin(t * 4 + n) > 0 ? 1 : 0.4, false, n % 2 ? YELLOW : SILVER); spr(SPR.star, k, by + bh - 18, 2, Math.sin(t * 4 + n + 1) > 0 ? 1 : 0.4, false, n % 2 ? SILVER : YELLOW); n++; }
+    for (k = by + 40; k < by + bh - 30; k += 30) { spr(SPR.star, bx + 8, k, 2, Math.sin(t * 4 + n) > 0 ? 1 : 0.4, false, SILVER); spr(SPR.star, bx + bw - 18, k, 2, Math.sin(t * 4 + n + 1) > 0 ? 1 : 0.4, false, SILVER); n++; }
+    txt("COSTUME ANALYSIS COMPLETE", W / 2, by + 50, 22, 1, "center", 1, SILVER);
+    txt(scan.rating, W / 2, by + 132, 84, 1, "center", 1, YELLOW);
+    txt(scan.cat, W / 2, by + 172, 28, 1, "center", 1, ORANGE);
+    txt("TRICK OR TREAT: APPROVED", W / 2, by + 206, 20, blink ? 1 : 0.5, "center", 1, PURPLE);
+    ctx.restore();
+  }
+
+  function applyEco() { FPS = eco ? 20 : 30; wrapEl.style.opacity = eco ? "0.6" : "1"; }
+  function toggleEco() {
+    eco = !eco; save("dadbot.eco", eco ? "1" : "0"); applyEco();
+    say(eco ? "> ECO MODE ON. DIMMED TO SAVE BATTERY" : "> ECO MODE OFF. FULL SPARKLE");
+  }
+  applyEco();
+
+  /* ---------- chrome: header, bottom strip, ticker, alerts ---------- */
+  var T0 = Date.now();
+  function clockStr() { var d = new Date(); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
+  function upStr() { var s = Math.floor((Date.now() - T0) / 1000); return pad2(Math.floor(s / 3600)) + ":" + pad2(Math.floor(s / 60) % 60) + ":" + pad2(s % 60); }
+
+  var alertState = { on: false, t: 0, msg: "" }, nextAuto = 90 + Math.random() * 60;
+  var ALERTS = ["CANDY DETECTED", "GHOST NEARBY", "COSTUME RATED: EPIC", "SUGAR LEVELS CRITICAL", "TRICK OR TREAT?", "SMALL HUMAN: CUTE", "SPARKLE OVERLOAD"];
+  function triggerAlert() {
+    if (scan.on) return;
+    alertState.on = true; alertState.t = 0; alertState.msg = pick(ALERTS);
+    var nice = /CUTE|EPIC|SPARKLE/.test(alertState.msg);
+    setExpr(nice ? "heart" : "wide", 4.5);
+    candyRain(nice);
+  }
+
+  function header(t) {
+    var status = alertState.on ? "ALERT" : scan.on ? "SCANNING" : eco ? "ECO" : "ONLINE";
+    spr(SPR.jack, 18, 16, 2.4, 0.75 + Math.random() * 0.25, false, ORANGE);
+    txt("DADBOT2000", 48, 36, 32, 1, "left", 1, YELLOW);
+    font(32); var tw = ctx.measureText("DADBOT2000").width;
+    txt("// " + status, 48 + tw + 12, 35, 22, alertState.on && Math.floor(t * 6) % 2 ? 1 : 0.9, "left", 1, SILVER);
+    // candy counter: tap to add one, hold to reset
+    candyBump = Math.max(0, candyBump - 0.08);
+    spr(ICONS[0].px, 472, 19, 2, 1, false, ORANGE);
+    txt(pad3(candy), 506, 36, 26 + candyBump * 6, 1, "left", 1, YELLOW);
+    txt("CANDY", 548 + candyBump * 4, 35, 16, 0.8, "left", 0.85, SILVER);
+    ctx.fillStyle = C(Math.floor(t * 2) % 2 === 0 ? 1 : 0.2, 1, PURPLE);
+    ctx.beginPath(); ctx.arc(656, 27, 4.5, 0, TAU); ctx.fill();
+    txt(clockStr(), 764, 35, 26, 1, "right", 1, SILVER);
+    line(16, 45.5, 764, 45.5, 0.75, 1, 1, PURPLE);
+    ctx.fillStyle = C(1); ctx.fillRect(16, 44, 46, 2); ctx.fillRect(718, 44, 46, 2);
+  }
+
+  function rh() { return ("0" + Math.floor(Math.random() * 256).toString(16).toUpperCase()).slice(-2); }
+  var hexB = [], hexAcc = 0, hot = 3, leds = [], ledAcc = 0, load = 0.42, loadAcc = 0;
+  for (var hi0 = 0; hi0 < 22; hi0++) hexB.push(rh());
+  for (var le0 = 0; le0 < 8; le0++) leds.push(Math.random() < 0.5);
+  function bottom() {
+    ctx.strokeStyle = C(0.7, 1, PURPLE); ctx.lineWidth = 1;
+    ctx.strokeRect(16.5, 270.5, 527, 27); ctx.strokeRect(554.5, 270.5, 209, 27);
+    for (var i = 0; i < hexB.length; i++) txt(hexB[i], 26 + i * 23.5, 290, 19, i === hot ? 1 : 0.45, "left", 1, i === hot ? YELLOW : SILVER);
+    for (var k = 0; k < 8; k++) { ctx.fillStyle = leds[k] ? C(1, 1, k & 1 ? ORANGE : YELLOW) : C(0.2, 1, PURPLE); ctx.fillRect(564 + k * 13, 279, 9, 10); }
+    txt(eco ? "ECO ON" : "LOAD " + load.toFixed(2), 756, 290, 19, 0.9, "right", 1, eco ? YELLOW : SILVER);
+  }
+
+  function ticker(t) {
+    ctx.fillStyle = C(0.12, 1, PURPLE); ctx.fillRect(16, 306, 748, 32);
+    ctx.strokeStyle = C(0.7, 1, PURPLE); ctx.lineWidth = 1; ctx.strokeRect(16.5, 306.5, 747, 31);
+    var s = tickNow().slice(0, tChars);
+    txt(s, 28, 329, 25, 1, "left", 1, YELLOW);
+    if (Math.floor(t * 2.5) % 2 === 0) { font(25); ctx.fillStyle = C(1, 1, ORANGE); ctx.fillRect(28 + ctx.measureText(s).width + 4, 312, 11, 20); }
+    txt("UP " + upStr(), 754, 328, 19, 0.8, "right", 0.85, SILVER);
+  }
+
+  function hazard(x, y, w, h, t) {
+    ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); ctx.fillStyle = "rgba(255,234,60,0.9)";
+    var off = (t * 40) % 20;
+    ctx.beginPath();
+    for (var sx = x - 20 + off; sx < x + w + 20; sx += 20) {
+      ctx.moveTo(sx, y + h); ctx.lineTo(sx + 10, y); ctx.lineTo(sx + 20, y); ctx.lineTo(sx + 10, y + h); ctx.closePath();
+    }
+    ctx.fill(); ctx.restore();
+  }
+  function drawAlert(t) {
+    if (!alertState.on) return;
+    var blink = Math.floor(t * 6) % 2 === 0, bx = 150, by = 112, bw = 480, bh = 112;
+    ctx.fillStyle = "rgba(0,0,0,0.92)"; ctx.fillRect(bx, by, bw, bh);
+    hazard(bx, by, bw, 10, t); hazard(bx, by + bh - 10, bw, 10, t);
+    ctx.strokeStyle = C(blink ? 1 : 0.5); ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh);
+    txt("!! ALERT !!", W / 2, by + 40, 24, blink ? 1 : 0.6, "center", 1, SILVER);
+    txt(alertState.msg, W / 2, by + 84, 42, 1, "center", 1, YELLOW);
+    if (blink) { ctx.strokeStyle = C(0.9); ctx.lineWidth = 4; rr(9, 9, W - 18, H - 18, 13); ctx.stroke(); }
+  }
+
+  function bezel(t) {
+    rr(6, 6, W - 12, H - 12, 14); ctx.fillStyle = "#000"; ctx.fill();
+    ctx.strokeStyle = C(0.7, 1, PURPLE); ctx.lineWidth = 2; ctx.stroke();
+    drawGlitter(t);
+  }
+
+  function drawScene(t, dt) {
+    bezel(t); header(t);
+    for (var k = 0; k < slots.length; k++) drawSlot(slots[k], t, dt);
+    ink0 = YELLOW;
+    bottom(); ticker(t);
+    drawCritter(); drawGlints(); drawScan(t); drawParts(); drawAlert(t);
+  }
+
+  /* ---------- boot sequence ---------- */
+  var state = "attract", bootPos = 0, bootHold = 0, crtT = 0;
+  var BOOT = [
+    "DADBOT2000 BIOS V6.66",
+    "(C) 1987 DAD INDUSTRIES",
+    "",
+    "MEMORY CHECK ............ 640K CANDY OK",
+    "LOADING PUN DATABASE .............. OK",
+    "INSTALLING DAD JOKES ...... 9001 FOUND",
+    "CALIBRATING SPOOK SENSORS ......... OK",
+    "POLISHING CHROME ............... SHINY",
+    "SPARKLE DRIVE ................ MAXIMUM",
+    "",
+    "BOOT COMPLETE. HAPPY HALLOWEEN."
+  ];
+  var BOOTC = [YELLOW, PURPLE, SILVER, SILVER, SILVER, SILVER, SILVER, SILVER, SILVER, SILVER, ORANGE];
+  function updateBoot(dt) {
+    var total = 0;
+    for (var i = 0; i < BOOT.length; i++) total += BOOT[i].length + 1;
+    bootPos = Math.min(bootPos + dt * 80, total);
+    if (bootPos >= total) {
+      bootHold += dt;
+      if (bootHold > 0.7) {
+        state = "crt"; crtT = 0;
+        slots.forEach(function (s, k) { s.blank = true; s.tr = -1; s.i = 0; s.delay = 0.5 + k * 0.3; });
+      }
+    }
+  }
+  function drawBoot(t) {
+    bezel(t);
+    var rem = bootPos, y = 46, cx = 40, cy = 46;
+    for (var i = 0; i < BOOT.length; i++) {
+      var n = Math.max(0, Math.min(BOOT[i].length, Math.floor(rem))), shown = BOOT[i].slice(0, n);
+      txt(shown, 40, y, 22, 0.95, "left", 1, BOOTC[i]);
+      font(22); cx = 40 + ctx.measureText(shown).width; cy = y;
+      rem -= BOOT[i].length + 1;
+      if (rem < 0) break;
+      y += 27;
+    }
+    if (Math.floor(t * 3) % 2) { ctx.fillStyle = C(1, 1, YELLOW); ctx.fillRect(cx + 3, cy - 17, 11, 20); }
+  }
+
+  /* ---------- main loop (capped at 30fps, 20fps in eco, to save battery) ---------- */
+  function update(dt) {
+    if (alertState.on) { alertState.t += dt; if (alertState.t > 4.5) alertState.on = false; }
+    alertMix += ((alertState.on ? 1 : 0) - alertMix) * Math.min(1, dt * 6);
+    if (state === "boot") updateBoot(dt);
+    else updateSlots(dt);
+    if (state === "crt") { crtT += dt; if (crtT >= 0.5) state = "run"; }
+    if (state === "run") { nextAuto -= dt; if (nextAuto <= 0 && !scan.on) { triggerAlert(); nextAuto = 90 + Math.random() * 90; } }
+    if (state !== "boot") updateCritter(dt);
+    updateFace(dt); updateParts(dt); updateGlints(dt); updateScan(dt);
+    tAcc += dt;
+    while (tAcc > 0.045) {
+      tAcc -= 0.045;
+      if (tChars < tickNow().length) tChars++;
+      else if (++tHold > 55) { if (tMsg) tMsg = null; else tIdx = (tIdx + 1) % TICKS.length; tChars = 0; tHold = 0; }
+    }
+    hexAcc += dt;
+    if (hexAcc > 0.12) { hexAcc = 0; hexB.shift(); hexB.push(rh()); hot--; if (hot < 0 || Math.random() < 0.05) hot = Math.floor(Math.random() * 22); }
+    ledAcc += dt;
+    if (ledAcc > 0.15) { ledAcc = 0; var li2 = 1 + Math.floor(Math.random() * 7); leds[li2] = !leds[li2]; }
+    leds[0] = level > 0.05 || Math.floor(T * 2) % 2 === 0;
+    loadAcc += dt;
+    if (loadAcc > 0.7) { loadAcc = 0; load = 0.15 + Math.random() * 0.75; }
+  }
+
+  function render(t, dt) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.setTransform(sc, 0, 0, sc, ox, oy);
+    ctx.textBaseline = "alphabetic";
+    ink0 = YELLOW;
+    if (state === "boot") drawBoot(t);
+    else if (state === "crt") {
+      var p = Math.min(1, crtT / 0.5), e = 1 - Math.pow(1 - p, 3), hh = Math.max(2, H * e);
+      ctx.save(); ctx.beginPath(); ctx.rect(0, H / 2 - hh / 2, W, hh); ctx.clip(); drawScene(t, dt); ctx.restore();
+      ctx.fillStyle = C(1 - p * 0.7, 1, PURPLE); ctx.fillRect(0, H / 2 - hh / 2 - 1, W, 2); ctx.fillRect(0, H / 2 + hh / 2 - 1, W, 2);
+      if (p < 0.25) { ctx.fillStyle = "rgba(240,232,255," + (1 - p * 4) + ")"; ctx.fillRect(40, H / 2 - 1.5, W - 80, 3); }
+    } else drawScene(t, dt);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.clearRect(0, 0, mid.width, mid.height); mctx.drawImage(cv, 0, 0, mid.width, mid.height);
+    gctx.clearRect(0, 0, gl.width, gl.height); gctx.drawImage(mid, 0, 0, gl.width, gl.height);
+  }
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var el = now - last;
+    if (el < 1000 / FPS - 4) return;
+    var dt = Math.min(0.1, Math.max(0, el / 1000)); last = now; T += dt;
+    simAudio(T);
+    update(dt);
+    render(T, dt);
+  }
+  requestAnimationFrame(frame);
+
+  /* ---------- input, wake lock ---------- */
+  function keepAwake() {
+    try {
+      if (navigator.wakeLock && document.visibilityState === "visible") navigator.wakeLock.request("screen").catch(function () {});
+    } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") { if (state !== "attract") keepAwake(); last = performance.now(); }
+  });
+
+  var startBtn = document.getElementById("start");
+  startBtn.addEventListener("click", function () {
+    startBtn.hidden = true;
+    try {
+      var de = document.documentElement, rf = de.requestFullscreen || de.webkitRequestFullscreen;
+      if (rf && !navigator.standalone) { var r = rf.call(de); if (r && r.catch) r.catch(function () {}); }
+    } catch (e) {}
+    keepAwake();
+    state = "boot"; bootPos = 0; bootHold = 0;
+  });
+
+  function endHold() { if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; } }
+  cv.addEventListener("pointerup", endHold);
+  cv.addEventListener("pointercancel", endHold);
+  cv.addEventListener("pointerleave", endHold);
+  cv.addEventListener("pointerdown", function (e) {
+    if (state !== "run" && state !== "attract") return;
+    var r = cv.getBoundingClientRect();
+    var lx = ((e.clientX - r.left) * dpr - ox) / sc, ly = ((e.clientY - r.top) * dpr - oy) / sc;
+    if (state === "run") {
+      if (ly < 48) {
+        if (lx >= 462 && lx <= 646) { addCandy(lx, ly); endHold(); holdTimer = setTimeout(resetCandy, 1500); }
+        else triggerAlert();
+        return;
+      }
+      if (ly >= 266 && ly <= 302) { if (lx < 549) startScan(); else toggleEco(); return; }
+      if (scan.on) return;
+    }
+    slots.forEach(function (s) {
+      if (lx < s.x || lx > s.x + s.w || ly < s.y || ly > s.y + s.h) return;
+      var m = s.mods[s.i];
+      if (m === FACE && !s.blank && s.tr < 0) { boop(lx, ly); return; }
+      if (m === DIAL && !s.blank && s.tr < 0) { spinDial(); spawn({ txt: pick(["WHEE!", "ZOOM!", "TURBO!"]), x: lx, y: ly - 6, vy: -45, life: 1, sz: 24, c: ORANGE }); return; }
+      if (s.tr < 0 && s.delay <= 0) go(s);
+    });
+    if (ly > 300) { if (tMsg) tMsg = null; else tIdx = (tIdx + 1) % TICKS.length; tChars = 0; tHold = 0; }
+  });
+})();
+</script>
+</body></html>
